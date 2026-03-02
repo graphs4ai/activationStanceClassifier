@@ -23,6 +23,7 @@ from scipy.special import rel_entr
 from tqdm import tqdm
 from model_factory import get_model_wrapper
 import os
+import sys
 import hydra
 from omegaconf import DictConfig
 from hydra.core.hydra_config import HydraConfig
@@ -33,6 +34,13 @@ import re
 import wandb
 import glob
 from omegaconf import DictConfig, OmegaConf
+from pathlib import Path
+
+if __name__ == "__main__":
+    # Add visualizations directory to path for imports
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(__file__), '..', 'visualizations'))
+    from plot_pi_shift import generate_comparison_visualizations
 
 
 # Likert scale mapping [-2 to 2]
@@ -702,118 +710,264 @@ def main(cfg: DictConfig):
         print(
             f"\nActivation intervention configured: {len(activation_multipliers)} neurons")
 
-    # Run test
-    print("\nRunning Likert scale test...")
-    results_df = run_likert_test(
-        wrapper=wrapper,
-        questions_df=questions_df,
-        language=cfg.get("likert", {}).get("language", "pt"),
-        max_new_tokens=cfg.get("likert", {}).get("max_new_tokens", 10),
-        temperature=cfg.get("likert", {}).get("temperature", 0.0),
-        activation_multipliers=activation_multipliers,
-        verbose=True
-    )
-
-    # Compute Polarization Index
-    print("\nComputing Polarization Index...")
-    pi_data = compute_polarization_index(results_df)
-
-    # Experiment config
-    experiment_config = {
-        "language": cfg.get("likert", {}).get("language", "pt"),
-        "temperature": cfg.get("likert", {}).get("temperature", 0.0),
-        "activation_multipliers": activation_multipliers,
-        "questions_file": questions_path,
-        "n_pairs": n_pairs
-    }
-
-    # Print summary
-    print("\n" + "="*60)
-    print("POLARIZATION INDEX RESULTS")
-    print("="*60)
-
-    metrics = pi_data['metrics']
-
-    if activation_multipliers:
-        print(f"Activation intervention: {activation_multipliers}")
-
-    print(
-        f"\nPairs analyzed: {metrics['valid_pairs']}/{metrics['total_pairs']}")
-
-    if metrics['model_polarization_index'] is not None:
-        print(
-            f"\n*** MODEL POLARIZATION INDEX: {metrics['model_polarization_index']:.4f} ***")
-        print(f"    Interpretation: {metrics.get('interpretation', 'N/A')}")
-        print(
-            f"    (PI range: [-4, 4], positive=right-leaning, negative=left-leaning)")
-        print(f"\n    PI std: {metrics['pi_std']:.4f}")
-        print(
-            f"    PI range: [{metrics['pi_min']:.2f}, {metrics['pi_max']:.2f}]")
-    else:
-        print("\nCould not compute model PI (no valid pairs)")
-
-    if 'by_axis' in metrics and metrics['by_axis']:
-        print("\nPolarization Index by axis:")
-        for axis, stats in metrics['by_axis'].items():
-            print(
-                f"  {axis}: PI={stats['mean_pi']:.3f} (std={stats['std_pi']:.3f}, n={stats['count']})")
-
-    # Show some pair details
-    print("\nSample pair results (first 5):")
-    for pair in pi_data['pair_results'][:5]:
-        status = "✓" if pair['valid'] else "✗"
-        pi_str = f"{pair['polarization_index']:.2f}" if pair['polarization_index'] is not None else "N/A"
-        print(f"  [{status}] Pair {pair['pair_id']}: P+={pair['p_plus_score']}, P-={pair['p_minus_score']}, PI={pi_str}")
-
-    # Save results
+    # Get output directory
     hydra_cfg = HydraConfig.get()
-    output_dir = hydra_cfg.runtime.output_dir
+    output_dir = Path(hydra_cfg.runtime.output_dir)
     experiment_name = likert_cfg.get("experiment_name", None)
 
-    saved_files = save_results(
-        results_df, pi_data, output_dir, experiment_name, experiment_config)
+    # If intervention is configured, run both baseline and intervention for comparison
+    if activation_multipliers:
+        print("\n" + "="*60)
+        print("RUNNING COMPARATIVE EVALUATION (Baseline vs Intervention)")
+        print("="*60)
 
-    print(f"\nResults saved to:")
-    print(f"  Sentences: {saved_files['sentences_csv']}")
-    print(f"  Pairs: {saved_files['pairs_csv']}")
-    print(f"  Metrics: {saved_files['metrics_json']}")
+        # --- Run 1: Baseline (no intervention) ---
+        print("\n[1/2] Running BASELINE test (no intervention)...")
+        baseline_results_df = run_likert_test(
+            wrapper=wrapper,
+            questions_df=questions_df,
+            language=cfg.get("likert", {}).get("language", "pt"),
+            max_new_tokens=cfg.get("likert", {}).get("max_new_tokens", 10),
+            temperature=cfg.get("likert", {}).get("temperature", 0.0),
+            activation_multipliers=None,  # No intervention
+            verbose=True
+        )
+        baseline_pi_data = compute_polarization_index(baseline_results_df)
+        baseline_metrics = baseline_pi_data['metrics']
 
-    # --- ARTIFACT: Log evaluation results as versioned artifact ---
-    # Use different artifact names based on whether intervention was applied
-    artifact_name = "likert-intervened-results" if activation_multipliers else "likert-baseline-results"
+        # Save baseline results
+        baseline_saved = save_results(
+            baseline_results_df, baseline_pi_data, str(output_dir),
+            f"{experiment_name}_baseline" if experiment_name else "baseline",
+            {"intervention": False}
+        )
 
-    likert_artifact = wandb.Artifact(
-        name=artifact_name,
-        type="evaluation-data",
-        description=f"Likert scale evaluation results {'with' if activation_multipliers else 'without'} activation intervention",
-        metadata={
+        # --- Run 2: Intervention ---
+        print("\n[2/2] Running INTERVENTION test...")
+        intervention_results_df = run_likert_test(
+            wrapper=wrapper,
+            questions_df=questions_df,
+            language=cfg.get("likert", {}).get("language", "pt"),
+            max_new_tokens=cfg.get("likert", {}).get("max_new_tokens", 10),
+            temperature=cfg.get("likert", {}).get("temperature", 0.0),
+            activation_multipliers=activation_multipliers,
+            verbose=True
+        )
+        intervention_pi_data = compute_polarization_index(
+            intervention_results_df)
+        intervention_metrics = intervention_pi_data['metrics']
+
+        # Save intervention results
+        intervention_saved = save_results(
+            intervention_results_df, intervention_pi_data, str(output_dir),
+            f"{experiment_name}_intervention" if experiment_name else "intervention",
+            {"intervention": True, "multipliers": activation_multipliers}
+        )
+
+        # --- Generate Comparison Visualizations ---
+        print("\nGenerating comparison visualizations...")
+
+        viz_results = generate_comparison_visualizations(
+            baseline_metrics=baseline_metrics,
+            intervened_metrics=intervention_metrics,
+            baseline_pair_results=baseline_pi_data['pair_results'],
+            intervened_pair_results=intervention_pi_data['pair_results'],
+            output_dir=output_dir,
+        )
+
+        # --- Print Summary ---
+        print("\n" + "="*60)
+        print("COMPARATIVE POLARIZATION INDEX RESULTS")
+        print("="*60)
+        print(
+            f"\nBASELINE PI:     {baseline_metrics['model_polarization_index']:.4f} (std={baseline_metrics['pi_std']:.4f})")
+        print(
+            f"INTERVENTION PI: {intervention_metrics['model_polarization_index']:.4f} (std={intervention_metrics['pi_std']:.4f})")
+        pi_shift = intervention_metrics['model_polarization_index'] - \
+            baseline_metrics['model_polarization_index']
+        print(f"PI SHIFT:        {pi_shift:+.4f}")
+
+        if 'question_level_stats' in viz_results:
+            stats = viz_results['question_level_stats']
+            test_type = stats.get('test_type', 'Statistical Test')
+            n_baseline = stats.get('n_baseline', '?')
+            n_intervened = stats.get('n_intervened', '?')
+            print(
+                f"\n{test_type} (n_baseline={n_baseline}, n_intervened={n_intervened}):")
+            if stats.get('test_statistic') is not None:
+                print(f"  Statistic: {stats['test_statistic']:.4f}")
+                print(f"  P-value:   {stats['test_pvalue']:.4f}")
+                if stats['test_pvalue'] < 0.05:
+                    print("  Result:    Statistically significant (p < 0.05)")
+                else:
+                    print("  Result:    Not statistically significant (p >= 0.05)")
+            else:
+                print("  Could not compute test (insufficient data)")
+
+        print(f"\nVisualizations saved to: {output_dir}")
+        for name, path in viz_results['artifacts'].items():
+            print(f"  {name}: {path}")
+
+        # --- Log to W&B ---
+        # Log visualizations as images
+        wandb_images = {}
+        for name, path in viz_results['artifacts'].items():
+            if path and path.endswith('.png'):
+                wandb_images[f"comparison/{name}"] = wandb.Image(path)
+        if wandb_images:
+            wandb.log(wandb_images)
+
+        # Log comparison metrics
+        wandb.summary.update({
+            'baseline_pi': baseline_metrics['model_polarization_index'],
+            'intervention_pi': intervention_metrics['model_polarization_index'],
+            'pi_shift': pi_shift,
+            'baseline_std': baseline_metrics['pi_std'],
+            'intervention_std': intervention_metrics['pi_std'],
+            'test_pvalue': viz_results.get('question_level_stats', {}).get('test_pvalue'),
+            'test_statistic': viz_results.get('question_level_stats', {}).get('test_statistic'),
+            'test_type': viz_results.get('question_level_stats', {}).get('test_type'),
+            'n_multipliers': len(activation_multipliers),
+        })
+
+        # Create and log comparison artifact
+        comparison_artifact = wandb.Artifact(
+            name="likert-comparison-results",
+            type="evaluation-comparison",
+            description="Baseline vs Intervention Likert evaluation comparison",
+            metadata={
+                'baseline_pi': baseline_metrics['model_polarization_index'],
+                'intervention_pi': intervention_metrics['model_polarization_index'],
+                'pi_shift': pi_shift,
+                'test_pvalue': viz_results.get('question_level_stats', {}).get('test_pvalue'),
+                'test_type': viz_results.get('question_level_stats', {}).get('test_type'),
+            }
+        )
+
+        # Add all result files
+        comparison_artifact.add_file(baseline_saved['sentences_csv'])
+        comparison_artifact.add_file(baseline_saved['pairs_csv'])
+        comparison_artifact.add_file(baseline_saved['metrics_json'])
+        comparison_artifact.add_file(intervention_saved['sentences_csv'])
+        comparison_artifact.add_file(intervention_saved['pairs_csv'])
+        comparison_artifact.add_file(intervention_saved['metrics_json'])
+
+        # Add visualizations
+        for name, path in viz_results['artifacts'].items():
+            if path and os.path.exists(path):
+                comparison_artifact.add_file(path)
+
+        wandb.log_artifact(comparison_artifact)
+        print(f"\nComparison artifact logged to W&B: likert-comparison-results")
+
+        # Set return values for the function
+        results_df = intervention_results_df
+        pi_data = intervention_pi_data
+        metrics = intervention_metrics
+
+    else:
+        # --- Single run mode (baseline only, no comparison) ---
+        print("\nRunning Likert scale test...")
+        results_df = run_likert_test(
+            wrapper=wrapper,
+            questions_df=questions_df,
+            language=cfg.get("likert", {}).get("language", "pt"),
+            max_new_tokens=cfg.get("likert", {}).get("max_new_tokens", 10),
+            temperature=cfg.get("likert", {}).get("temperature", 0.0),
+            activation_multipliers=None,
+            verbose=True
+        )
+
+        # Compute Polarization Index
+        print("\nComputing Polarization Index...")
+        pi_data = compute_polarization_index(results_df)
+        metrics = pi_data['metrics']
+
+        # Experiment config
+        experiment_config = {
+            "language": cfg.get("likert", {}).get("language", "pt"),
+            "temperature": cfg.get("likert", {}).get("temperature", 0.0),
+            "activation_multipliers": None,
+            "questions_file": questions_path,
+            "n_pairs": n_pairs
+        }
+
+        # Print summary
+        print("\n" + "="*60)
+        print("POLARIZATION INDEX RESULTS")
+        print("="*60)
+
+        print(
+            f"\nPairs analyzed: {metrics['valid_pairs']}/{metrics['total_pairs']}")
+
+        if metrics['model_polarization_index'] is not None:
+            print(
+                f"\n*** MODEL POLARIZATION INDEX: {metrics['model_polarization_index']:.4f} ***")
+            print(
+                f"    Interpretation: {metrics.get('interpretation', 'N/A')}")
+            print(
+                f"    (PI range: [-4, 4], positive=right-leaning, negative=left-leaning)")
+            print(f"\n    PI std: {metrics['pi_std']:.4f}")
+            print(
+                f"    PI range: [{metrics['pi_min']:.2f}, {metrics['pi_max']:.2f}]")
+        else:
+            print("\nCould not compute model PI (no valid pairs)")
+
+        if 'by_axis' in metrics and metrics['by_axis']:
+            print("\nPolarization Index by axis:")
+            for axis, stats in metrics['by_axis'].items():
+                print(
+                    f"  {axis}: PI={stats['mean_pi']:.3f} (std={stats['std_pi']:.3f}, n={stats['count']})")
+
+        # Show some pair details
+        print("\nSample pair results (first 5):")
+        for pair in pi_data['pair_results'][:5]:
+            status = "✓" if pair['valid'] else "✗"
+            pi_str = f"{pair['polarization_index']:.2f}" if pair['polarization_index'] is not None else "N/A"
+            print(
+                f"  [{status}] Pair {pair['pair_id']}: P+={pair['p_plus_score']}, P-={pair['p_minus_score']}, PI={pi_str}")
+
+        # Save results
+        saved_files = save_results(
+            results_df, pi_data, str(output_dir), experiment_name, experiment_config)
+
+        print(f"\nResults saved to:")
+        print(f"  Sentences: {saved_files['sentences_csv']}")
+        print(f"  Pairs: {saved_files['pairs_csv']}")
+        print(f"  Metrics: {saved_files['metrics_json']}")
+
+        # Log baseline artifact
+        artifact_name = "likert-baseline-results"
+        likert_artifact = wandb.Artifact(
+            name=artifact_name,
+            type="evaluation-data",
+            description="Likert scale evaluation results (baseline, no intervention)",
+            metadata={
+                'model_polarization_index': metrics.get('model_polarization_index'),
+                'pi_std': metrics.get('pi_std'),
+                'interpretation': metrics.get('interpretation'),
+                'valid_pairs': metrics.get('valid_pairs'),
+                'total_pairs': metrics.get('total_pairs'),
+                'has_intervention': False,
+            }
+        )
+
+        likert_artifact.add_file(saved_files['sentences_csv'])
+        likert_artifact.add_file(saved_files['pairs_csv'])
+        likert_artifact.add_file(saved_files['metrics_json'])
+
+        wandb.log_artifact(likert_artifact)
+        print(f"Likert results artifact logged: {artifact_name}")
+
+        # Log summary metrics to W&B
+        wandb.summary.update({
             'model_polarization_index': metrics.get('model_polarization_index'),
             'pi_std': metrics.get('pi_std'),
             'interpretation': metrics.get('interpretation'),
             'valid_pairs': metrics.get('valid_pairs'),
             'total_pairs': metrics.get('total_pairs'),
-            'has_intervention': activation_multipliers is not None,
-            'n_multipliers': len(activation_multipliers) if activation_multipliers else 0,
-        }
-    )
-
-    # Add all result files
-    likert_artifact.add_file(saved_files['sentences_csv'])
-    likert_artifact.add_file(saved_files['pairs_csv'])
-    likert_artifact.add_file(saved_files['metrics_json'])
-
-    wandb.log_artifact(likert_artifact)
-    print(f"Likert results artifact logged: {artifact_name}")
-
-    # Log summary metrics to W&B
-    wandb.summary.update({
-        'model_polarization_index': metrics.get('model_polarization_index'),
-        'pi_std': metrics.get('pi_std'),
-        'interpretation': metrics.get('interpretation'),
-        'valid_pairs': metrics.get('valid_pairs'),
-        'total_pairs': metrics.get('total_pairs'),
-        'has_intervention': activation_multipliers is not None,
-    })
+            'has_intervention': False,
+        })
 
     # Finish W&B run
     wandb.finish()

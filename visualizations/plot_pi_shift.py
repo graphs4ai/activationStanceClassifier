@@ -5,11 +5,13 @@ import json
 from math import pi
 from pathlib import Path
 from scipy import stats
+import numpy as np
+from typing import Union, TYPE_CHECKING
 
 import matplotlib
+from matplotlib.lines import Line2D
 
 matplotlib.use("Agg")
-# import numpy as np
 
 # --- Configuration ---
 FILE_BASELINE = "runs/2026-02-19/13-21-10/metrics_20260219_132154.json"
@@ -33,8 +35,27 @@ def load_question_pis(baseline_csv, intervened_csv):
 
 
 def create_boxplot_comparison(baseline_pis, intervened_pis, output_dir):
-    """Creates a boxplot comparing question-level PI distributions."""
+    """Creates a boxplot comparing question-level PI distributions.
+
+    Handles arrays of different lengths by using Mann-Whitney U test
+    (unpaired) instead of Wilcoxon signed-rank test when sizes differ.
+    """
     fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Handle empty arrays
+    if len(baseline_pis) == 0 or len(intervened_pis) == 0:
+        ax.text(0.5, 0.5, 'Insufficient data for comparison',
+                ha='center', va='center', transform=ax.transAxes, fontsize=14)
+        fig.tight_layout()
+        boxplot_path = output_dir / "pi_shift_boxplot.png"
+        fig.savefig(boxplot_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        return boxplot_path, {
+            'baseline_mean': None, 'baseline_std': None,
+            'intervened_mean': None, 'intervened_std': None,
+            'test_statistic': None, 'test_pvalue': None,
+            'test_type': None, 'n_baseline': 0, 'n_intervened': 0
+        }
 
     data_to_plot = [baseline_pis, intervened_pis]
     bp = ax.boxplot(data_to_plot, tick_labels=['Baseline', 'Intervened'],
@@ -52,21 +73,39 @@ def create_boxplot_comparison(baseline_pis, intervened_pis, output_dir):
     ax.yaxis.grid(True, linestyle='--', alpha=0.5)
 
     # Add statistics as text
-    baseline_mean = baseline_pis.mean()
-    intervened_mean = intervened_pis.mean()
-    baseline_std = baseline_pis.std()
-    intervened_std = intervened_pis.std()
+    baseline_mean = float(np.mean(baseline_pis))
+    intervened_mean = float(np.mean(intervened_pis))
+    baseline_std = float(np.std(baseline_pis))
+    intervened_std = float(np.std(intervened_pis))
 
-    # Perform Wilcoxon Signed-Rank Test
-    wilcoxon_stat, wilcoxon_pvalue = stats.wilcoxon(
-        baseline_pis, intervened_pis)
+    # Choose appropriate statistical test based on array lengths
+    n_baseline = len(baseline_pis)
+    n_intervened = len(intervened_pis)
+
+    if n_baseline == n_intervened and n_baseline > 0:
+        # Paired test (Wilcoxon signed-rank)
+        try:
+            test_stat, test_pvalue = stats.wilcoxon(
+                baseline_pis, intervened_pis)
+            test_type = 'Wilcoxon'
+        except ValueError:
+            # Fall back to Mann-Whitney if Wilcoxon fails (e.g., all differences are zero)
+            test_stat, test_pvalue = stats.mannwhitneyu(
+                baseline_pis, intervened_pis, alternative='two-sided')
+            test_type = 'Mann-Whitney U'
+    else:
+        # Unpaired test (Mann-Whitney U) for different sample sizes
+        test_stat, test_pvalue = stats.mannwhitneyu(
+            baseline_pis, intervened_pis, alternative='two-sided')
+        test_type = 'Mann-Whitney U'
+
     effect_size = (intervened_mean - baseline_mean) / \
         baseline_std if baseline_std != 0 else float('inf')
 
-    stats_text = f"Baseline: μ={baseline_mean:.3f}, σ={baseline_std:.3f}\n"
-    stats_text += f"Intervened: μ={intervened_mean:.3f}, σ={intervened_std:.3f}\n"
-    stats_text += f"Wilcoxon: p={wilcoxon_pvalue:.4f} (stat={wilcoxon_stat:.3f})\n"
-    stats_text += f"Effect Size (Rank-Biserial r): {effect_size:.3f}"
+    stats_text = f"Baseline: μ={baseline_mean:.3f}, σ={baseline_std:.3f} (n={n_baseline})\n"
+    stats_text += f"Intervened: μ={intervened_mean:.3f}, σ={intervened_std:.3f} (n={n_intervened})\n"
+    stats_text += f"{test_type}: p={test_pvalue:.4f} (stat={test_stat:.3f})\n"
+    stats_text += f"Effect Size (Cohen's d): {effect_size:.3f}"
 
     ax.text(0.98, 0.02, stats_text, transform=ax.transAxes,
             fontsize=10, verticalalignment='bottom', horizontalalignment='right',
@@ -82,14 +121,61 @@ def create_boxplot_comparison(baseline_pis, intervened_pis, output_dir):
         'baseline_std': baseline_std,
         'intervened_mean': intervened_mean,
         'intervened_std': intervened_std,
-        'wilcoxon_statistic': float(wilcoxon_stat),
-        'wilcoxon_pvalue': float(wilcoxon_pvalue)
+        'test_statistic': float(test_stat),
+        'test_pvalue': float(test_pvalue),
+        'test_type': test_type,
+        'n_baseline': n_baseline,
+        'n_intervened': n_intervened
     }
 
 
-def create_parallel_coordinates_plot(baseline_pis, intervened_pis, output_dir):
-    """Creates a parallel coordinates plot showing shift from baseline to intervened."""
+def create_parallel_coordinates_plot(baseline_pis, intervened_pis, output_dir,
+                                     baseline_pair_ids=None, intervened_pair_ids=None):
+    """Creates a parallel coordinates plot showing shift from baseline to intervened.
+
+    If pair_ids are provided, aligns data by pair_id to ensure correct pairing.
+    Only plots pairs that exist in both baseline and intervention.
+    """
     fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Align by pair_id if provided
+    if baseline_pair_ids is not None and intervened_pair_ids is not None:
+        # Create dictionaries for lookup
+        baseline_dict = {pid: pi for pid, pi in zip(
+            baseline_pair_ids, baseline_pis)}
+        intervened_dict = {pid: pi for pid, pi in zip(
+            intervened_pair_ids, intervened_pis)}
+
+        # Find common pair_ids
+        common_ids = set(baseline_dict.keys()) & set(intervened_dict.keys())
+        if len(common_ids) == 0:
+            ax.text(0.5, 0.5, 'No common pairs between baseline and intervention',
+                    ha='center', va='center', transform=ax.transAxes, fontsize=14)
+            fig.tight_layout()
+            parallel_path = output_dir / "pi_shift_parallel.png"
+            fig.savefig(parallel_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+            return parallel_path
+
+        # Extract aligned arrays
+        common_ids_sorted = sorted(common_ids)
+        baseline_pis = np.array([baseline_dict[pid]
+                                for pid in common_ids_sorted])
+        intervened_pis = np.array([intervened_dict[pid]
+                                  for pid in common_ids_sorted])
+    else:
+        # Fallback: use minimum length if no pair_ids provided
+        min_len = min(len(baseline_pis), len(intervened_pis))
+        if min_len == 0:
+            ax.text(0.5, 0.5, 'Insufficient data for parallel plot',
+                    ha='center', va='center', transform=ax.transAxes, fontsize=14)
+            fig.tight_layout()
+            parallel_path = output_dir / "pi_shift_parallel.png"
+            fig.savefig(parallel_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+            return parallel_path
+        baseline_pis = baseline_pis[:min_len]
+        intervened_pis = intervened_pis[:min_len]
 
     n_questions = len(baseline_pis)
 
@@ -140,7 +226,7 @@ def create_parallel_coordinates_plot(baseline_pis, intervened_pis, output_dir):
     legend_elements = [
         Patch(facecolor='red', alpha=0.6, label='Leftward shift'),
         Patch(facecolor='blue', alpha=0.6, label='Rightward shift'),
-        plt.Line2D([0], [0], color='black', linewidth=3, label='Mean PI')
+        Line2D([0], [0], color='black', linewidth=3, label='Mean PI')
     ]
     ax.legend(handles=legend_elements, loc='upper left', fontsize=10)
 
@@ -157,6 +243,181 @@ def create_parallel_coordinates_plot(baseline_pis, intervened_pis, output_dir):
     plt.close(fig)
 
     return parallel_path
+
+
+def create_fluidity_chart(baseline_by_axis: dict, intervened_by_axis: dict, output_dir):
+    """Creates a horizontal bar chart showing PI shift by axis/theme.
+
+    Args:
+        baseline_by_axis: Dict mapping axis name to stats dict with 'mean_pi'
+        intervened_by_axis: Dict mapping axis name to stats dict with 'mean_pi'
+        output_dir: Path object for output directory
+
+    Returns:
+        Tuple of (figure path, DataFrame with axis data)
+    """
+    # Prepare data
+    axes_data = {}
+    for axis, stats in baseline_by_axis.items():
+        axes_data[axis] = {'Baseline': stats['mean_pi']}
+
+    for axis, stats in intervened_by_axis.items():
+        if axis in axes_data:
+            axes_data[axis]['Intervened'] = stats['mean_pi']
+
+    df_axes = pd.DataFrame(axes_data).T
+    df_axes['diff'] = (df_axes['Intervened'] - df_axes['Baseline']).abs()
+    df_axes = df_axes.sort_values('diff', ascending=False)
+
+    # Create bar chart
+    fig, ax = plt.subplots(figsize=(10, 6))
+    change = df_axes['Intervened'] - df_axes['Baseline']
+    colors = ['red' if x < 0 else 'blue' for x in change]
+
+    change.plot(kind='barh', ax=ax, color=colors, alpha=0.7)
+    ax.axvline(0, color='black', linewidth=0.8)
+    ax.set_xlabel("Shift in PI (Negative = Move Left)", fontsize=12)
+    ax.set_title("Fluidity/PI Shift by Theme", fontsize=14)
+    ax.grid(axis='x', linestyle='--', alpha=0.5)
+
+    for i, v in enumerate(change):
+        ax.text(v - 0.1 if v < 0 else v + 0.05, i, f"{v:.2f}", va='center')
+
+    fig.tight_layout()
+    fluidity_path = output_dir / "pi_shift_fluidity.png"
+    fig.savefig(fluidity_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return fluidity_path, df_axes
+
+
+def generate_comparison_visualizations(
+    baseline_metrics: dict,
+    intervened_metrics: dict,
+    baseline_pair_results: list,
+    intervened_pair_results: list,
+    output_dir: Union[str, Path],
+) -> dict:
+    """
+    Generates all comparison visualizations from in-memory data.
+
+    This function is designed to be imported and called from other modules
+    (e.g., likert_scale_test.py) without needing to save/load from files.
+
+    Handles cases where baseline and intervention have different numbers of
+    valid pairs by aligning on pair_id where possible.
+
+    Args:
+        baseline_metrics: Dict with 'model_polarization_index', 'pi_std', 'by_axis'
+        intervened_metrics: Dict with 'model_polarization_index', 'pi_std', 'by_axis'
+        baseline_pair_results: List of pair result dicts with 'pair_id' and 'polarization_index'
+        intervened_pair_results: List of pair result dicts with 'pair_id' and 'polarization_index'
+        output_dir: Path or str to output directory
+
+    Returns:
+        Dictionary with paths to generated artifacts and computed statistics
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Extract valid PIs with their pair_ids
+    baseline_valid = [
+        (p['pair_id'], p['polarization_index'])
+        for p in baseline_pair_results
+        if p.get('polarization_index') is not None
+    ]
+    intervened_valid = [
+        (p['pair_id'], p['polarization_index'])
+        for p in intervened_pair_results
+        if p.get('polarization_index') is not None
+    ]
+
+    # Check if we have any valid data
+    if len(baseline_valid) == 0 and len(intervened_valid) == 0:
+        raise ValueError(
+            "No valid pair results in either baseline or intervention. Cannot generate visualizations.")
+
+    # Extract arrays for boxplot (can have different lengths)
+    baseline_pair_ids = np.array(
+        [p[0] for p in baseline_valid]) if baseline_valid else np.array([])
+    baseline_pair_pis = np.array(
+        [p[1] for p in baseline_valid]) if baseline_valid else np.array([])
+    intervened_pair_ids = np.array(
+        [p[0] for p in intervened_valid]) if intervened_valid else np.array([])
+    intervened_pair_pis = np.array(
+        [p[1] for p in intervened_valid]) if intervened_valid else np.array([])
+
+    results = {
+        'baseline_pi': baseline_metrics.get('model_polarization_index'),
+        'intervened_pi': intervened_metrics.get('model_polarization_index'),
+        'baseline_std': baseline_metrics.get('pi_std'),
+        'intervened_std': intervened_metrics.get('pi_std'),
+        'n_baseline_valid': len(baseline_valid),
+        'n_intervened_valid': len(intervened_valid),
+        'artifacts': {},
+    }
+
+    # 1. Radar chart (if axis data available)
+    baseline_by_axis = baseline_metrics.get('by_axis', {})
+    intervened_by_axis = intervened_metrics.get('by_axis', {})
+
+    if baseline_by_axis and intervened_by_axis:
+        # Prepare axis data for radar chart
+        axes_data = {}
+        for axis, axis_stats in baseline_by_axis.items():
+            axes_data[axis] = {'Baseline': axis_stats['mean_pi']}
+        for axis, axis_stats in intervened_by_axis.items():
+            if axis in axes_data:
+                axes_data[axis]['Intervened'] = axis_stats['mean_pi']
+
+        df_axes = pd.DataFrame(axes_data).T
+        df_axes['diff'] = (df_axes['Intervened'] - df_axes['Baseline']).abs()
+        df_axes = df_axes.sort_values('diff', ascending=False)
+
+        # Create radar chart
+        fig_radar = create_radar_chart(
+            df_axes.index.tolist(),
+            df_axes['Baseline'].tolist(),
+            df_axes['Intervened'].tolist(),
+            "PI Breakdown by Theme"
+        )
+        radar_path = output_dir / "pi_shift_radar.png"
+        fig_radar.savefig(radar_path, dpi=300, bbox_inches="tight")
+        plt.close(fig_radar)
+        results['artifacts']['radar'] = str(radar_path)
+
+        # Create fluidity chart
+        fluidity_path, _ = create_fluidity_chart(
+            baseline_by_axis, intervened_by_axis, output_dir)
+        results['artifacts']['fluidity'] = str(fluidity_path)
+
+        # Save axes CSV
+        axes_csv_path = output_dir / "pi_shift_axes.csv"
+        df_axes.to_csv(axes_csv_path)
+        results['artifacts']['axes_csv'] = str(axes_csv_path)
+
+    # 2. Boxplot comparison
+    boxplot_path, boxplot_stats = create_boxplot_comparison(
+        baseline_pair_pis, intervened_pair_pis, output_dir
+    )
+    results['artifacts']['boxplot'] = str(boxplot_path)
+    results['question_level_stats'] = boxplot_stats
+
+    # 3. Parallel coordinates plot (aligned by pair_id)
+    parallel_path = create_parallel_coordinates_plot(
+        baseline_pair_pis, intervened_pair_pis, output_dir,
+        baseline_pair_ids=baseline_pair_ids,
+        intervened_pair_ids=intervened_pair_ids
+    )
+    results['artifacts']['parallel'] = str(parallel_path)
+
+    # Save summary JSON
+    summary_path = output_dir / "pi_shift_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    results['artifacts']['summary'] = str(summary_path)
+
+    return results
 
 
 def create_radar_chart(categories, baseline_vals, intervened_vals, title):
@@ -281,10 +542,11 @@ def main():
             f"Baseline - Mean: {boxplot_stats['baseline_mean']:.3f}, Std: {boxplot_stats['baseline_std']:.3f}")
         print(
             f"Intervened - Mean: {boxplot_stats['intervened_mean']:.3f}, Std: {boxplot_stats['intervened_std']:.3f}")
-        print(f"\nWilcoxon Signed-Rank Test:")
-        print(f"Statistic: {boxplot_stats['wilcoxon_statistic']:.4f}")
-        print(f"P-value: {boxplot_stats['wilcoxon_pvalue']:.4f}")
-        if boxplot_stats['wilcoxon_pvalue'] < 0.05:
+        test_type = boxplot_stats.get('test_type', 'Statistical Test')
+        print(f"\n{test_type}:")
+        print(f"Statistic: {boxplot_stats['test_statistic']:.4f}")
+        print(f"P-value: {boxplot_stats['test_pvalue']:.4f}")
+        if boxplot_stats['test_pvalue'] < 0.05:
             print("Result: Statistically significant difference (p < 0.05)")
         else:
             print("Result: No statistically significant difference (p >= 0.05)")
