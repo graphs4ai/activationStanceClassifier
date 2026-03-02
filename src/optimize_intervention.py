@@ -899,7 +899,7 @@ def main(cfg: DictConfig):
 
         # --- ARTIFACT: Log intervention multipliers as versioned model-weights artifact ---
         best_trial = study.best_trial
-        multipliers_artifact_name = study_name
+        multipliers_artifact_name = f"{wrapper.model.cfg.model_name}_{objective_mode}_{direction}_multipliers"
         multipliers_artifact = wandb.Artifact(
             name=multipliers_artifact_name,
             type="model-weights",
@@ -917,7 +917,8 @@ def main(cfg: DictConfig):
         )
         multipliers_artifact.add_file(results_path)
         wandb.log_artifact(multipliers_artifact)
-        print(f"Intervention multipliers artifact logged: {multipliers_artifact_name}")
+        print(
+            f"Intervention multipliers artifact logged: {multipliers_artifact_name}")
 
         # Log summary metrics to W&B
         wandb.summary.update({
