@@ -615,7 +615,6 @@ def main(cfg: DictConfig):
 
     # Get multiplier artifact name if provided
     multiplier_artifact_name = likert_cfg.get('multiplier_artifact_name', None)
-    job_type = likert_cfg.get('job_type', 'likert_eval')
 
     # Initialize W&B
     wandb_config = OmegaConf.to_container(cfg, resolve=True)
@@ -631,7 +630,7 @@ def main(cfg: DictConfig):
     wandb.init(
         project=wandb_cfg.get('project', 'activation-bias-classifier'),
         name=wandb_cfg.get('run_name', None),
-        job_type=job_type,
+        job_type="likert_eval",
         config=wandb_config,
     )
 
