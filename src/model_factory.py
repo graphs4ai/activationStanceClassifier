@@ -40,6 +40,16 @@ def get_model_wrapper(cfg: DictConfig, device: str = "auto"):
     model_name = model_cfg.get("name", None)
     n_devices = model_cfg.get("n_devices", 1)
 
+    # Auto-cap n_devices at the number of available GPUs
+    if device != "cpu" and n_devices > 1:
+        gpu_count = torch.cuda.device_count()
+        if gpu_count < n_devices:
+            print(
+                f"Warning: n_devices={n_devices} requested but only {gpu_count} GPU(s) available. "
+                f"Using n_devices={gpu_count}."
+            )
+            n_devices = max(gpu_count, 1)
+
     # Resolve dtype from config string
     dtype_str = model_cfg.get("dtype", "float16").lower()
     dtype_map = {

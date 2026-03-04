@@ -22,6 +22,7 @@ class Llama3dot1Wrapper:
                              When > 1, transformer blocks are distributed across GPUs.
         """
         self.device = device
+        self.n_devices = n_devices
 
         # Load the base model using HookedTransformer
         self.model = HookedTransformer.from_pretrained(
@@ -33,6 +34,9 @@ class Llama3dot1Wrapper:
             dtype=dtype,
             n_devices=n_devices,
         )
+
+        # When using multi-GPU, input must go to the first device explicitly
+        self.input_device = "cuda:0" if n_devices > 1 else device
 
         # Ensure a pad token exists for masking if needed
         if self.model.tokenizer.pad_token_id is None:
@@ -141,7 +145,7 @@ class Llama3dot1Wrapper:
 
         with torch.no_grad():
             self.model.run_with_hooks(
-                tokens.to(self.device),
+                tokens.to(self.input_device),
                 fwd_hooks=fwd_hooks,
                 stop_at_layer=stop_at_layer
             )
@@ -203,7 +207,7 @@ class Llama3dot1Wrapper:
         if activation_multipliers is None or len(activation_multipliers) == 0:
             # No intervention, use standard generation
             return self.model.generate(
-                input_ids.to(self.device),
+                input_ids.to(self.input_device),
                 max_new_tokens=max_new_tokens,
                 temperature=temperature if temperature is not None else 1.0,
                 do_sample=do_sample,
@@ -260,7 +264,7 @@ class Llama3dot1Wrapper:
 
             try:
                 output_ids = self.model.generate(
-                    input_ids.to(self.device),
+                    input_ids.to(self.input_device),
                     max_new_tokens=max_new_tokens,
                     temperature=temperature if temperature is not None else 1.0,
                     do_sample=do_sample,
@@ -348,7 +352,7 @@ class Llama3dot1Wrapper:
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
 
-        input_ids = input_ids.to(self.device)
+        input_ids = input_ids.to(self.input_device)
 
         # Default to empty dict if no multipliers provided
         if activation_multipliers is None or len(activation_multipliers) == 0:

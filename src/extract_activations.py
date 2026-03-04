@@ -148,27 +148,29 @@ def main(cfg: DictConfig):
             padding=True,
             truncation=True,
             max_length=cfg.extraction.max_length
-        ).to(device)
+        )
 
-        input_ids = torch.Tensor(encoding['input_ids'])
-        attention_mask = torch.Tensor(encoding['attention_mask'])
+        input_ids = encoding['input_ids']
+        attention_mask = encoding['attention_mask']
 
         try:
+            # Wrapper handles device placement internally;
+            # activations are returned on CPU (hooks use .detach().cpu())
             layer_activations = wrapper.get_layer_activations(
-                input_ids, layers=cfg.extraction.layers).to(device)
+                input_ids, layers=cfg.extraction.layers)
         except Exception as e:
             print(f"Error processing batch {start_idx}-{end_idx}: {e}")
             continue
 
         padding_side = wrapper.model.tokenizer.padding_side
 
-        batch_indices = torch.arange(input_ids.shape[0], device=device)
+        batch_indices = torch.arange(input_ids.shape[0])
 
         if padding_side == 'left':
             last_token_indices = -1
             final_activations = layer_activations[:, -1, :]
         else:
-            last_token_indices = attention_mask.sum(dim=1).to(device) - 1
+            last_token_indices = attention_mask.sum(dim=1).long() - 1
             final_activations = layer_activations[batch_indices,
                                                   last_token_indices, :]
 

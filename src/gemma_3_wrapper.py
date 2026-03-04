@@ -28,6 +28,7 @@ class Gemma3Wrapper:
                        When > 1, transformer blocks are distributed across GPUs.
         """
         self.device = device
+        self.n_devices = n_devices
 
         self.model = HookedTransformer.from_pretrained(
             model_name,
@@ -38,6 +39,9 @@ class Gemma3Wrapper:
             dtype=dtype,
             n_devices=n_devices,
         )
+
+        # When using multi-GPU, input must go to the first device explicitly
+        self.input_device = "cuda:0" if n_devices > 1 else device
 
         # Ensure pad token exists
         if self.model.tokenizer.pad_token_id is None:
@@ -106,7 +110,7 @@ class Gemma3Wrapper:
 
         with torch.no_grad():
             self.model.run_with_hooks(
-                tokens.to(self.device),
+                tokens.to(self.input_device),
                 fwd_hooks=fwd_hooks,
                 stop_at_layer=stop_at_layer,
             )
@@ -135,7 +139,7 @@ class Gemma3Wrapper:
 
         if not activation_multipliers:
             return self.model.generate(
-                input_ids.to(self.device),
+                input_ids.to(self.input_device),
                 max_new_tokens=max_new_tokens,
                 temperature=temperature if temperature is not None else 1.0,
                 do_sample=do_sample,
@@ -173,7 +177,7 @@ class Gemma3Wrapper:
                 self.model.add_hook(hp, fn)
             try:
                 out = self.model.generate(
-                    input_ids.to(self.device),
+                    input_ids.to(self.input_device),
                     max_new_tokens=max_new_tokens,
                     temperature=temperature if temperature is not None else 1.0,
                     do_sample=do_sample,
@@ -220,7 +224,7 @@ class Gemma3Wrapper:
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
 
-        input_ids = input_ids.to(self.device)
+        input_ids = input_ids.to(self.input_device)
 
         if not activation_multipliers:
             with torch.no_grad():
