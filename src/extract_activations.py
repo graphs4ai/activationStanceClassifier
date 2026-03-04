@@ -177,7 +177,7 @@ def main(cfg: DictConfig):
 
     # 5. Save Results
     print(f"Saving results to {output_path}...")
-    # Hydra changes cwd to the run dir, so we just save to the filename
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     activation_df.save(output_path)
     full_output_path = os.path.join(os.getcwd(), output_path)
     print(f"Done. Saved to {full_output_path}")
