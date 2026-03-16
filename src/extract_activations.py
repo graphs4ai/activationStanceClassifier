@@ -61,10 +61,10 @@ def main(cfg: DictConfig):
     # Determine artifact name based on dataset and model
     dataset_name = os.path.basename(input_path).replace(
         '.csv', '').replace('_propositions', '')
-    model_short = cfg.model.wrapper  # 'llama' or 'gemma'
+    model_name = cfg.model.name.split('/')[-1]
     layers = cfg.extraction.layers
     layers_str = 'all' if layers == 'all' else f"L{str(layers)}"
-    artifact_name = f"activations-{dataset_name}-{model_short}-{layers_str}"
+    artifact_name = f"activations-{dataset_name}-{model_name}-{layers_str}"
     output_path = f"data/{artifact_name}.parquet"
 
     # Initialize W&B with job_type="extraction" (if not already initialized for artifact download)
