@@ -62,6 +62,9 @@ def create_boxplot_comparison(baseline_pis, intervened_pis, output_dir):
                     patch_artist=True, widths=0.6,
                     orientation='horizontal')
 
+    # Keep PI scale fixed for comparability across runs.
+    ax.set_xlim(-4, 4)
+
     # Color the boxes
     colors = ['blue', 'red']
     for patch, color in zip(bp['boxes'], colors):
@@ -291,6 +294,27 @@ def create_fluidity_chart(baseline_by_axis: dict, intervened_by_axis: dict, outp
     return fluidity_path, df_axes
 
 
+def build_axes_comparison_df(baseline_by_axis: dict, intervened_by_axis: dict) -> pd.DataFrame:
+    """Build aligned axis comparison data with a stable topic order.
+
+    Topic order is alphabetical so radar charts remain consistent across runs.
+    """
+    common_axes = sorted(set(baseline_by_axis.keys()) &
+                         set(intervened_by_axis.keys()))
+    if not common_axes:
+        return pd.DataFrame(columns=['Baseline', 'Intervened'])
+
+    rows = [
+        {
+            'axis': axis,
+            'Baseline': baseline_by_axis[axis]['mean_pi'],
+            'Intervened': intervened_by_axis[axis]['mean_pi'],
+        }
+        for axis in common_axes
+    ]
+    return pd.DataFrame(rows).set_index('axis')
+
+
 def generate_comparison_visualizations(
     baseline_metrics: dict,
     intervened_metrics: dict,
@@ -362,17 +386,8 @@ def generate_comparison_visualizations(
     intervened_by_axis = intervened_metrics.get('by_axis', {})
 
     if baseline_by_axis and intervened_by_axis:
-        # Prepare axis data for radar chart
-        axes_data = {}
-        for axis, axis_stats in baseline_by_axis.items():
-            axes_data[axis] = {'Baseline': axis_stats['mean_pi']}
-        for axis, axis_stats in intervened_by_axis.items():
-            if axis in axes_data:
-                axes_data[axis]['Intervened'] = axis_stats['mean_pi']
-
-        df_axes = pd.DataFrame(axes_data).T
-        df_axes['diff'] = (df_axes['Intervened'] - df_axes['Baseline']).abs()
-        df_axes = df_axes.sort_values('diff', ascending=False)
+        df_axes = build_axes_comparison_df(
+            baseline_by_axis, intervened_by_axis)
 
         # Create radar chart
         fig_radar = create_radar_chart(
@@ -480,20 +495,9 @@ def main():
     print(f"Baseline PI: {baseline['model_polarization_index']:.3f}")
     print(f"Intervened PI: {intervened['model_polarization_index']:.3f}")
 
-    # 2. Prepare Data for Radar Chart (Axis Breakdown)
-    axes_data = {}
-    for axis, stats in baseline['by_axis'].items():
-        axes_data[axis] = {'Baseline': stats['mean_pi']}
-
-    for axis, stats in intervened['by_axis'].items():
-        if axis in axes_data:
-            axes_data[axis]['Intervened'] = stats['mean_pi']
-
-    df_axes = pd.DataFrame(axes_data).T
-
-    # Sort by 'Intervened' magnitude to make the chart look organized
-    df_axes['diff'] = (df_axes['Intervened'] - df_axes['Baseline']).abs()
-    df_axes = df_axes.sort_values('diff', ascending=False)
+    # 2. Prepare Data for Radar Chart (Axis Breakdown) with stable topic order
+    df_axes = build_axes_comparison_df(
+        baseline['by_axis'], intervened['by_axis'])
 
     # 3. Plot 1: Radar Chart (The "Footprint")
     fig1 = create_radar_chart(
