@@ -438,6 +438,7 @@ def generate_comparison_visualizations(
 def create_radar_chart(categories, baseline_vals, intervened_vals, title):
     """Generates a Radar Chart comparing Baseline vs Intervened."""
     N = len(categories)
+    categories = ["\n".join(cat.split()) for cat in categories]
 
     angles = [n / float(N) * 2 * pi for n in range(N)]
     angles += angles[:1]  # Close the loop
@@ -447,7 +448,7 @@ def create_radar_chart(categories, baseline_vals, intervened_vals, title):
     assert isinstance(ax, PolarAxes)
 
     # Draw one axe per variable + add labels
-    plt.xticks(angles[:-1], categories, color='grey', size=10)
+    plt.xticks(angles[:-1], categories, color='grey', size=25)
 
     # Draw ylabels (concentric circles)
     ax.set_rlabel_position(0)
