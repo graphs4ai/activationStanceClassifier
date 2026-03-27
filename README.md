@@ -110,8 +110,9 @@ wandb login
 
 ### Full Pipeline Execution
 
-Each model has a **unified config** (`llama-3.1-8b.yaml`, `gemma-3-4b.yaml`, `gemma-3-27b.yaml`) that can be used across all pipeline steps. Alternatively, use the step-specific configs.
+Each model has a **unified config** (`llama-3.1-8b.yaml`, `gemma-3-4b.yaml`, `gemma-3-27b.yaml`, `qwen-3-8b.yaml`, `qwen-3-0.6b.yaml`, `phi-3.yaml`) that can be used across all pipeline steps. Alternatively, use the step-specific configs.
 
+> TODO: Update step 4; baseline is automatically executed within the Likert Scale Test to generate comparison figs
 ```bash
 # 1. Extract activations from your dataset
 python src/extract_activations.py --config-name llama-3.1-8b \
