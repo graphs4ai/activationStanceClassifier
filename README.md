@@ -69,6 +69,7 @@ The project uses **W&B Artifacts** for full reproducibility and lineage tracking
 │   └── activation_df.py             # Activation data utilities
 ├── visualizations/
 │   ├── plot_pi_shift.py             # PI shift comparison plots
+│   ├── create_triple_comparison_wandb.py  # Base/Max/Min composite from W&B artifacts
 │   └── multipliers.py              # Multiplier distribution boxplot
 ├── scripts/
 │   ├── create_activation_datasets.sh  # Batch extraction runner
@@ -263,6 +264,22 @@ python visualizations/multipliers.py \
   --file path/to/multipliers.json \
   --output multiplier_boxplot.png
 ```
+
+### Create Base/Max/Min composite from W&B artifacts
+
+```bash
+python visualizations/create_triple_comparison_wandb.py \
+  --max-artifact "ebouhid-unicamp/activation-stance-classifier/likert-comparison-results:v3" \
+  --min-artifact "ebouhid-unicamp/activation-stance-classifier/likert-comparison-results:v4" \
+  --baseline-source max \
+  --output-dir comparison_results_llama
+```
+
+Notes:
+- `--max-artifact`: artifact containing baseline + maximization results.
+- `--min-artifact`: artifact containing baseline + minimization results.
+- `--baseline-source`: choose which artifact baseline to use (`max` or `min`).
+- You can pass either canonical refs (`entity/project/name:vN`) or W&B artifact URLs.
 
 ## Output Examples
 
