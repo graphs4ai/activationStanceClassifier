@@ -2,7 +2,7 @@
 Model Factory for selecting between different model wrappers.
 
 This module provides a unified interface for creating model wrappers
-based on configuration, allowing easy switching between Llama and Gemma models.
+based on configuration, allowing easy switching between supported model families.
 """
 
 from typing import Union, Optional
@@ -17,12 +17,12 @@ def get_model_wrapper(cfg: DictConfig, device: str = "auto"):
         cfg: Hydra/OmegaConf config containing model settings.
              Expected structure:
                model:
-                 name: "meta-llama/Llama-3.1-8B-Instruct"  # or "google/gemma-3-9b-it"
-                 wrapper: "llama"  # "llama" or "gemma"
+                                 name: "meta-llama/Llama-3.1-8B-Instruct"  # or another supported model name
+                                wrapper: "llama"  # "llama", "gemma", "qwen", "phi", or "mistral"
         device: Override device from config. If "auto", uses cfg.extraction.device.
 
     Returns:
-        Model wrapper instance (Llama3dot1Wrapper or Gemma3Wrapper)
+        Model wrapper instance for the selected wrapper type.
 
     Raises:
         ValueError: If wrapper type is not recognized
@@ -118,10 +118,44 @@ def get_model_wrapper(cfg: DictConfig, device: str = "auto"):
                     "Failed to initialize tokenizer for default Qwen model")
             return model_wrapper
 
+    elif wrapper_type == "phi":
+        from phi_3_mini_wrapper import Phi3MiniWrapper
+        if model_name:
+            model_wrapper = Phi3MiniWrapper(
+                model_name=model_name, device=device, dtype=dtype, n_devices=n_devices)
+            if model_wrapper.model.tokenizer is None:
+                raise ValueError(
+                    f"Failed to initialize tokenizer for model: {model_name}")
+            return model_wrapper
+        else:
+            model_wrapper = Phi3MiniWrapper(
+                device=device, dtype=dtype, n_devices=n_devices)
+            if model_wrapper.model.tokenizer is None:
+                raise ValueError(
+                    "Failed to initialize tokenizer for default Phi model")
+            return model_wrapper
+
+    elif wrapper_type == "mistral":
+        from mistral_7b_wrapper import Mistral7BWrapper
+        if model_name:
+            model_wrapper = Mistral7BWrapper(
+                model_name=model_name, device=device, dtype=dtype, n_devices=n_devices)
+            if model_wrapper.model.tokenizer is None:
+                raise ValueError(
+                    f"Failed to initialize tokenizer for model: {model_name}")
+            return model_wrapper
+        else:
+            model_wrapper = Mistral7BWrapper(
+                device=device, dtype=dtype, n_devices=n_devices)
+            if model_wrapper.model.tokenizer is None:
+                raise ValueError(
+                    "Failed to initialize tokenizer for default Mistral model")
+            return model_wrapper
+
     else:
         raise ValueError(
             f"Unknown wrapper type: '{wrapper_type}'. "
-            f"Supported types: 'llama', 'gemma', 'qwen'"
+            f"Supported types: 'llama', 'gemma', 'qwen', 'phi', 'mistral'"
         )
 
 
@@ -130,7 +164,7 @@ def get_wrapper_class(wrapper_type: str):
     Get the wrapper class without instantiating it.
 
     Args:
-        wrapper_type: "llama", "gemma", or "qwen"
+        wrapper_type: "llama", "gemma", "qwen", "phi", or "mistral"
 
     Returns:
         The wrapper class (not an instance)
@@ -146,8 +180,14 @@ def get_wrapper_class(wrapper_type: str):
     elif wrapper_type == "qwen":
         from qwen_3_wrapper import Qwen3Wrapper
         return Qwen3Wrapper
+    elif wrapper_type == "phi":
+        from phi_3_mini_wrapper import Phi3MiniWrapper
+        return Phi3MiniWrapper
+    elif wrapper_type == "mistral":
+        from mistral_7b_wrapper import Mistral7BWrapper
+        return Mistral7BWrapper
     else:
         raise ValueError(
             f"Unknown wrapper type: '{wrapper_type}'. "
-            f"Supported types: 'llama', 'gemma', 'qwen'"
+            f"Supported types: 'llama', 'gemma', 'qwen', 'phi', 'mistral'"
         )
