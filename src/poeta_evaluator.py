@@ -7,7 +7,7 @@ import torch
 import logging
 import wandb
 from datetime import datetime
-from typing import Optional, Dict, List, Any, Iterable
+from typing import Optional, Dict, List, Any, Iterable, Tuple
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -81,7 +81,8 @@ finally:
 
 class IntervenedLlamaLM(BaseLM):
     """
-    PoETa-compatible Language Model wrapper for Llama 3.1 / Gemma 3 with activation interventions.
+    PoETa-compatible Language Model wrapper for supported TransformerLens models
+    (Llama 3.1 / Gemma 3 / Qwen 3 / Phi-4) with activation interventions.
 
     This class bridges the model wrappers (which use TransformerLens/HookedTransformer)
     with the PoETa evaluation framework, enabling evaluation of models with modified
@@ -106,7 +107,7 @@ class IntervenedLlamaLM(BaseLM):
             batch_size: Batch size for evaluation
             activation_multipliers: Dict mapping 'layer_X-neuron_Y' to multiplier values
                                    for activation interventions. None for baseline.
-            wrapper_type: "llama" or "gemma"
+            wrapper_type: "llama", "gemma", "qwen", or "phi"
             dtype: Model data type (e.g. torch.bfloat16). Used if wrapper_type needs it.
         """
         super().__init__()
@@ -296,6 +297,9 @@ def run_poeta_evaluation(
     log_to_wandb: bool = False,
     wandb_prefix: str = "",
     dtype: Optional[torch.dtype] = None,
+    evaluation_variant: str = "baseline",
+    multiplier_source: str = "none",
+    multiplier_artifact_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run PoETa V2 benchmark evaluation on a model with optional interventions.
@@ -304,7 +308,7 @@ def run_poeta_evaluation(
         activation_multipliers: Dict of 'layer_X-neuron_Y' -> multiplier for interventions.
                                Use None or {} for baseline evaluation.
         model_name: HuggingFace model identifier
-        wrapper_type: "llama" or "gemma"
+        wrapper_type: "llama", "gemma", "qwen", or "phi"
         tasks_list: List of PoETa task names to run. None runs all tasks.
         num_fewshot: Number of few-shot examples
         prompt_modes: Prompt mode(s), comma-separated
@@ -399,6 +403,9 @@ def run_poeta_evaluation(
         'activation_multipliers': activation_multipliers,
         'num_interventions': len(activation_multipliers or {}),
         'evaluation_type': 'intervened' if activation_multipliers else 'baseline',
+        'evaluation_variant': evaluation_variant,
+        'multiplier_source': multiplier_source,
+        'multiplier_artifact_name': multiplier_artifact_name,
         'timestamp': datetime.now().isoformat(),
         'tasks': task_names,
         'num_fewshot': num_fewshot,
@@ -488,198 +495,7 @@ def run_poeta_evaluation(
     return serializable_results
 
 
-def compare_baseline_vs_intervened(
-    activation_multipliers: Dict[str, float],
-    model_name: str = "meta-llama/Llama-3.1-8B-Instruct",
-    wrapper_type: str = "llama",
-    tasks_list: Optional[List[str]] = None,
-    num_fewshot: int = 0,
-    limit: Optional[int] = None,
-    output_dir: str = "runs",
-    save_logs: bool = True,
-    log_to_wandb: bool = False,
-    dtype: Optional[torch.dtype] = None,
-) -> Dict[str, Any]:
-    """
-    Run PoETa evaluation on both baseline and intervened models, then compare.
-
-    Args:
-        activation_multipliers: Interventions to apply to the model
-        model_name: HuggingFace model identifier
-        wrapper_type: "llama" or "gemma"
-        tasks_list: List of tasks to evaluate
-        num_fewshot: Few-shot examples
-        limit: Example limit per task
-        output_dir: Base directory to save results (will create runs/date/poeta_time/)
-        save_logs: Whether to save terminal output to log files
-        log_to_wandb: Whether to log results to wandb
-
-    Returns:
-        Dictionary with 'baseline', 'intervened', and 'comparison' results
-    """
-    # Follow convention: runs/date/poeta_time/
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    time_str = datetime.now().strftime("%H-%M-%S")
-    run_dir = Path(output_dir) / date_str / f"poeta_{time_str}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    # Set up logging to file
-    log_file = run_dir / "evaluation.log"
-
-    def run_evaluations():
-        # Run baseline
-        print("\n" + "#"*60)
-        print("# BASELINE EVALUATION")
-        print("#"*60)
-        baseline_results = run_poeta_evaluation(
-            activation_multipliers=None,
-            model_name=model_name,
-            wrapper_type=wrapper_type,
-            tasks_list=tasks_list,
-            num_fewshot=num_fewshot,
-            limit=limit,
-            output_path=str(run_dir / "baseline_results.json"),
-            description_dict_path="description.json",
-            log_to_wandb=log_to_wandb,
-            wandb_prefix="baseline/",
-            dtype=dtype,
-        )
-
-        # Run intervened
-        print("\n" + "#"*60)
-        print("# INTERVENED EVALUATION")
-        print("#"*60)
-        intervened_results = run_poeta_evaluation(
-            activation_multipliers=activation_multipliers,
-            model_name=model_name,
-            wrapper_type=wrapper_type,
-            tasks_list=tasks_list,
-            num_fewshot=num_fewshot,
-            limit=limit,
-            output_path=str(run_dir / "intervened_results.json"),
-            description_dict_path="description.json",
-            log_to_wandb=log_to_wandb,
-            wandb_prefix="intervened/",
-            dtype=dtype,
-        )
-
-        # Compute comparison
-        comparison = compute_comparison(baseline_results, intervened_results)
-
-        # Save comparison
-        comparison_path = run_dir / "comparison.json"
-        with open(comparison_path, 'w') as f:
-            json.dump(comparison, f, indent=2)
-
-        print("\n" + "="*60)
-        print("COMPARISON: Intervened vs Baseline")
-        print("="*60)
-        for task, metrics in comparison.get('per_task', {}).items():
-            print(f"\n{task}:")
-            for metric, delta in metrics.items():
-                sign = "+" if delta > 0 else ""
-                print(f"  {metric}: {sign}{delta:.4f}")
-
-        if 'overall' in comparison:
-            print(f"\nOverall change: {comparison['overall']:+.4f}")
-
-        # Log comparison to wandb
-        if log_to_wandb and wandb.run is not None:
-            comparison_metrics = {}
-            if 'overall' in comparison:
-                comparison_metrics["delta/overall_change"] = comparison['overall']
-
-            table_rows = []
-            for task, metrics in comparison.get('per_task', {}).items():
-                for metric, delta in metrics.items():
-                    comparison_metrics[f"delta/{task}/{metric}"] = delta
-                    table_rows.append([task, metric, delta])
-
-            if table_rows:
-                table = wandb.Table(
-                    columns=["Task", "Metric", "Delta"], data=table_rows)
-                comparison_metrics["delta/comparison_table"] = table
-
-            wandb.log(comparison_metrics)
-
-        return baseline_results, intervened_results, comparison
-
-    # Run with or without logging
-    if save_logs:
-        with tee_output(log_file):
-            print(f"Log file: {log_file}")
-            print(f"Run directory: {run_dir}")
-            print(f"Timestamp: {datetime.now().isoformat()}")
-            print("\n" + "="*60)
-            baseline_results, intervened_results, comparison = run_evaluations()
-    else:
-        baseline_results, intervened_results, comparison = run_evaluations()
-
-    # Save config used for this run
-    config_path = run_dir / "config.json"
-    config_data = {
-        'model_name': model_name,
-        'activation_multipliers': activation_multipliers,
-        'tasks': tasks_list,
-        'num_fewshot': num_fewshot,
-        'limit': limit,
-        'timestamp': datetime.now().isoformat(),
-    }
-    with open(config_path, 'w') as f:
-        json.dump(config_data, f, indent=2)
-
-    return {
-        'baseline': baseline_results,
-        'intervened': intervened_results,
-        'comparison': comparison,
-        'output_dir': str(run_dir),
-        'log_file': str(log_file) if save_logs else None,
-    }
-
-
-def compute_comparison(
-    baseline: Dict[str, Any],
-    intervened: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Compute metric differences between baseline and intervened results."""
-    comparison = {'per_task': {}}
-
-    baseline_results = baseline.get('results', {})
-    intervened_results = intervened.get('results', {})
-
-    deltas = []
-    for task in baseline_results:
-        if task in intervened_results:
-            comparison['per_task'][task] = {}
-
-            # Iterate through keys which might be metrics or prompt_modes
-            for key, base_val in baseline_results[task].items():
-                if key in intervened_results[task]:
-                    int_val = intervened_results[task][key]
-
-                    # Case 1: Nested dictionary (Prompt Mode)
-                    if isinstance(base_val, dict) and isinstance(int_val, dict):
-                        for metric, b_v in base_val.items():
-                            if metric in int_val:
-                                i_v = int_val[metric]
-                                if isinstance(b_v, (int, float)) and isinstance(i_v, (int, float)):
-                                    delta = i_v - b_v
-                                    comparison['per_task'][task][metric] = delta
-                                    deltas.append(delta)
-
-                    # Case 2: Direct value (Metric)
-                    elif isinstance(base_val, (int, float)) and isinstance(int_val, (int, float)):
-                        delta = int_val - base_val
-                        comparison['per_task'][task][key] = delta
-                        deltas.append(delta)
-
-    if deltas:
-        comparison['overall'] = sum(deltas) / len(deltas)
-
-    return comparison
-
-
-def _load_multipliers_from_config(cfg: DictConfig) -> tuple:
+def _load_multipliers_from_config(cfg: DictConfig) -> Tuple[Optional[Dict[str, float]], Dict[str, Any]]:
     """
     Load activation multipliers using the same logic as likert_scale_test.py.
 
@@ -692,13 +508,28 @@ def _load_multipliers_from_config(cfg: DictConfig) -> tuple:
         cfg: Hydra DictConfig
 
     Returns:
-        Tuple of (activation_multipliers dict or None, source description string)
+        Tuple:
+          - activation_multipliers dict or None
+          - provenance metadata dict with source/artifact_name/variant
     """
     likert_cfg = cfg.get('likert', {})
     if likert_cfg is None:
         likert_cfg = {}
 
+    evaluation_variant = str(cfg.get('evaluation_variant', '') or '').strip().lower()
+    if evaluation_variant not in {"baseline", "maximize", "minimize"}:
+        evaluation_variant = "baseline"
+
     multiplier_artifact_name = likert_cfg.get('multiplier_artifact_name', None)
+
+    provenance = {
+        "source": "none",
+        "artifact_name": multiplier_artifact_name,
+        "variant": evaluation_variant,
+    }
+
+    if evaluation_variant == "baseline":
+        return None, provenance
 
     # --- Option 1: Load from W&B artifact ---
     if multiplier_artifact_name:
@@ -724,22 +555,25 @@ def _load_multipliers_from_config(cfg: DictConfig) -> tuple:
             f"Loaded {len(activation_multipliers)} multipliers from artifact")
         print(
             f"Artifact best trial value: {best_trial.get('soft_score', 'N/A')}")
-        return activation_multipliers, f"artifact:{multiplier_artifact_name}"
+        provenance["source"] = "artifact"
+        return activation_multipliers, provenance
 
     # --- Option 2: Load from likert.activation_multipliers ---
     likert_multipliers = likert_cfg.get('activation_multipliers', None)
     if likert_multipliers is not None:
         activation_multipliers = {str(k): float(v)
                                   for k, v in dict(likert_multipliers).items()}
-        return activation_multipliers, "likert.activation_multipliers"
+        provenance["source"] = "likert.activation_multipliers"
+        return activation_multipliers, provenance
 
     # --- Option 3: Load from top-level activation_multipliers (legacy) ---
     if cfg.get('activation_multipliers'):
         activation_multipliers = OmegaConf.to_container(
             cfg.activation_multipliers)
-        return activation_multipliers, "activation_multipliers"
+        provenance["source"] = "activation_multipliers"
+        return activation_multipliers, provenance
 
-    return None, "none"
+    return None, provenance
 
 
 # Hydra configuration for running from command line
@@ -754,14 +588,14 @@ def main(cfg: DictConfig):
 
     Config should contain:
         - model / model_name: HuggingFace model path
-        - tasks: List of task names or 'all'
-        - num_fewshot: Number of few-shot examples
-        - limit: Example limit (null for full evaluation)
+        - poeta.tasks: List of task names or 'all'
+        - poeta.num_fewshot: Number of few-shot examples
+        - poeta.limit: Example limit (null for full evaluation)
+        - poeta.output_dir: Where to save results
+        - poeta.batch_size / poeta.device / poeta.prompt_modes
         - likert.multiplier_artifact_name: W&B artifact with optimized multipliers
         - likert.activation_multipliers: Inline multipliers dict
         - activation_multipliers: Legacy inline multipliers dict
-        - compare_baseline: Whether to run comparison mode
-        - output_dir: Where to save results
     """
     # Change back to project directory (Hydra changes cwd to outputs/)
     os.chdir(PROJECT_PATH)
@@ -791,13 +625,22 @@ def main(cfg: DictConfig):
     }
     dtype = dtype_map.get(dtype_str, torch.float16)
 
+    evaluation_variant = str(cfg.get('evaluation_variant', '') or '').strip().lower()
+    if not evaluation_variant:
+        evaluation_variant = "baseline"
+    if evaluation_variant not in {"baseline", "maximize", "minimize"}:
+        raise ValueError(
+            f"Invalid evaluation_variant='{evaluation_variant}'. Expected one of: baseline, maximize, minimize."
+        )
+
     # Prepare wandb config metadata
     likert_cfg = cfg.get('likert', {}) or {}
     multiplier_artifact_name = likert_cfg.get('multiplier_artifact_name', None)
 
     wandb_config = OmegaConf.to_container(cfg, resolve=True)
     wandb_config.update({
-        'multiplier_source': 'artifact' if multiplier_artifact_name else 'config',
+        'evaluation_variant': evaluation_variant,
+        'multiplier_source': 'artifact' if multiplier_artifact_name else 'config_or_none',
         'multiplier_artifact_name': multiplier_artifact_name,
     })
 
@@ -826,8 +669,21 @@ def main(cfg: DictConfig):
             log_to_wandb = True
 
     # Load activation multipliers (same logic as likert_scale_test.py)
-    activation_multipliers, multiplier_source = _load_multipliers_from_config(
+    activation_multipliers, multiplier_provenance = _load_multipliers_from_config(
         cfg)
+    multiplier_source = multiplier_provenance["source"]
+
+    if evaluation_variant in {"maximize", "minimize"} and not activation_multipliers:
+        raise ValueError(
+            f"evaluation_variant='{evaluation_variant}' requires multipliers, but none were found."
+        )
+    if evaluation_variant == "baseline" and activation_multipliers:
+        print(
+            "\nBaseline variant requested: ignoring configured multipliers and running without intervention."
+        )
+        activation_multipliers = None
+        multiplier_source = "none"
+        multiplier_provenance["source"] = "none"
 
     if activation_multipliers:
         print(
@@ -836,104 +692,110 @@ def main(cfg: DictConfig):
     else:
         print("\nNo activation interventions configured (baseline mode)")
 
+    # Parse nested PoETa configuration
+    poeta_cfg = cfg.get('poeta', None)
+    if not poeta_cfg:
+        raise ValueError(
+            "Missing required 'poeta' section in config. "
+            "All PoETa evaluation settings must be nested under 'poeta:'."
+        )
+
     # Parse tasks
     tasks_list = None
-    if cfg.get('tasks') and cfg.tasks != 'all':
-        if isinstance(cfg.tasks, str):
-            tasks_list = cfg.tasks.split(',')
+    poeta_tasks = poeta_cfg.get('tasks')
+    if poeta_tasks and poeta_tasks != 'all':
+        if isinstance(poeta_tasks, str):
+            tasks_list = poeta_tasks.split(',')
         else:
             # It's already a list (ListConfig)
-            tasks_list = list(cfg.tasks)
+            tasks_list = list(poeta_tasks)
 
-    if cfg.get('compare_baseline', False):
-        # Run comparison mode
-        results = compare_baseline_vs_intervened(
-            activation_multipliers=activation_multipliers or {},
+    poeta_num_fewshot = int(poeta_cfg.get('num_fewshot', 0))
+    poeta_limit = poeta_cfg.get('limit', None)
+    poeta_prompt_modes = poeta_cfg.get('prompt_modes', 'dynamic-random')
+    poeta_device = poeta_cfg.get('device', 'cuda')
+    poeta_batch_size = int(poeta_cfg.get('batch_size', 1))
+    poeta_output_dir = poeta_cfg.get('output_dir', 'runs')
+    poeta_save_logs = bool(poeta_cfg.get('save_logs', True))
+    poeta_description_dict_path = poeta_cfg.get(
+        'description_dict_path', 'description.json')
+    poeta_compare_baseline = bool(poeta_cfg.get('compare_baseline', False))
+
+    # Run single evaluation - follow convention: runs/date/poeta_time/
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    time_str = datetime.now().strftime("%H-%M-%S")
+    eval_type = 'intervened' if activation_multipliers else 'baseline'
+    run_dir = Path(poeta_output_dir) / date_str / f"poeta_{time_str}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output_path = str(run_dir / f"{evaluation_variant}_{eval_type}_results.json")
+    log_file = run_dir / "evaluation.log"
+
+    def run_single_eval():
+        return run_poeta_evaluation(
+            activation_multipliers=activation_multipliers,
             model_name=model_name,
             wrapper_type=wrapper_type,
             tasks_list=tasks_list,
-            num_fewshot=cfg.get('num_fewshot', 0),
-            limit=cfg.get('limit'),
-            output_dir=cfg.get('output_dir', 'runs'),
-            save_logs=cfg.get('save_logs', True),
+            num_fewshot=poeta_num_fewshot,
+            prompt_modes=poeta_prompt_modes,
+            batch_size=poeta_batch_size,
+            device=poeta_device,
+            limit=poeta_limit,
+            output_path=output_path,
+            description_dict_path=poeta_description_dict_path,
             log_to_wandb=log_to_wandb,
+            wandb_prefix=f"variant/{evaluation_variant}/",
             dtype=dtype,
+            evaluation_variant=evaluation_variant,
+            multiplier_source=multiplier_source,
+            multiplier_artifact_name=multiplier_artifact_name,
         )
 
-        # Log comparison artifact to W&B
-        if log_to_wandb and wandb.run is not None:
-            run_dir = results.get('output_dir', '')
-            if run_dir:
-                _log_comparison_artifact(
-                    run_dir=run_dir,
-                    results=results,
-                    model_name=model_name,
-                    multiplier_source=multiplier_source,
-                    multiplier_artifact_name=multiplier_artifact_name,
-                    n_multipliers=len(activation_multipliers or {}),
-                )
-    else:
-        # Run single evaluation - follow convention: runs/date/poeta_time/
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        time_str = datetime.now().strftime("%H-%M-%S")
-        eval_type = 'intervened' if activation_multipliers else 'baseline'
-        run_dir = Path(cfg.get('output_dir', 'runs')) / \
-            date_str / f"poeta_{time_str}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(run_dir / f"{eval_type}_results.json")
-        log_file = run_dir / "evaluation.log"
-
-        def run_single_eval():
-            return run_poeta_evaluation(
-                activation_multipliers=activation_multipliers,
-                model_name=model_name,
-                wrapper_type=wrapper_type,
-                tasks_list=tasks_list,
-                num_fewshot=cfg.get('num_fewshot', 0),
-                limit=cfg.get('limit'),
-                output_path=output_path,
-                description_dict_path=cfg.get(
-                    'description_dict_path', 'description.json'),
-                log_to_wandb=log_to_wandb,
-                dtype=dtype,
-            )
-
-        if cfg.get('save_logs', True):
-            with tee_output(log_file):
-                print(f"Log file: {log_file}")
-                print(f"Run directory: {run_dir}")
-                print(f"Timestamp: {datetime.now().isoformat()}")
-                print("\n" + "="*60)
-                results = run_single_eval()
-        else:
+    if poeta_save_logs:
+        with tee_output(log_file):
+            print(f"Log file: {log_file}")
+            print(f"Run directory: {run_dir}")
+            print(f"Timestamp: {datetime.now().isoformat()}")
+            print("\n" + "="*60)
             results = run_single_eval()
+    else:
+        results = run_single_eval()
 
-        # Save config used for this run
-        config_path = run_dir / "config.json"
-        config_data = {
-            'model_name': model_name,
-            'activation_multipliers': activation_multipliers,
-            'multiplier_source': multiplier_source,
-            'multiplier_artifact_name': multiplier_artifact_name,
-            'tasks': tasks_list,
-            'num_fewshot': cfg.get('num_fewshot', 0),
-            'limit': cfg.get('limit'),
-            'timestamp': datetime.now().isoformat(),
-        }
-        with open(config_path, 'w') as f:
-            json.dump(config_data, f, indent=2)
+    # Save config used for this run
+    config_path = run_dir / "config.json"
+    config_data = {
+        'model_name': model_name,
+        'evaluation_variant': evaluation_variant,
+        'activation_multipliers': activation_multipliers,
+        'multiplier_source': multiplier_source,
+        'multiplier_artifact_name': multiplier_artifact_name,
+        'multiplier_provenance': multiplier_provenance,
+        'tasks': tasks_list,
+        'num_fewshot': poeta_num_fewshot,
+        'limit': poeta_limit,
+        'prompt_modes': poeta_prompt_modes,
+        'device': poeta_device,
+        'batch_size': poeta_batch_size,
+        'compare_baseline': poeta_compare_baseline,
+        'output_dir': poeta_output_dir,
+        'description_dict_path': poeta_description_dict_path,
+        'timestamp': datetime.now().isoformat(),
+    }
+    with open(config_path, 'w') as f:
+        json.dump(config_data, f, indent=2)
 
-        # Log single-eval artifact to W&B
-        if log_to_wandb and wandb.run is not None:
-            _log_single_eval_artifact(
-                run_dir=str(run_dir),
-                results=results,
-                eval_type=eval_type,
-                model_name=model_name,
-                multiplier_source=multiplier_source,
-                multiplier_artifact_name=multiplier_artifact_name,
-                n_multipliers=len(activation_multipliers or {}),
-            )
+    # Log single-eval artifact to W&B
+    if log_to_wandb and wandb.run is not None:
+        _log_single_eval_artifact(
+            run_dir=str(run_dir),
+            results=results,
+            eval_type=eval_type,
+            evaluation_variant=evaluation_variant,
+            model_name=model_name,
+            multiplier_source=multiplier_source,
+            multiplier_artifact_name=multiplier_artifact_name,
+            n_multipliers=len(activation_multipliers or {}),
+        )
 
     # Finish W&B run
     if wandb.run is not None:
@@ -946,20 +808,22 @@ def _log_single_eval_artifact(
     run_dir: str,
     results: Dict[str, Any],
     eval_type: str,
+    evaluation_variant: str,
     model_name: str,
     multiplier_source: str,
     multiplier_artifact_name: Optional[str],
     n_multipliers: int,
 ):
     """Log a single PoETa evaluation run as a W&B artifact."""
-    artifact_name = f"poeta-{eval_type}-results"
+    artifact_name = f"poeta-{evaluation_variant}-{eval_type}-results"
     artifact = wandb.Artifact(
         name=artifact_name,
         type="poeta-evaluation",
-        description=f"PoETa V2 evaluation results ({eval_type})",
+        description=f"PoETa V2 evaluation results ({evaluation_variant}/{eval_type})",
         metadata={
             'model_name': model_name,
             'eval_type': eval_type,
+            'evaluation_variant': evaluation_variant,
             'multiplier_source': multiplier_source,
             'multiplier_artifact_name': multiplier_artifact_name,
             'n_multipliers': n_multipliers,
@@ -979,63 +843,11 @@ def _log_single_eval_artifact(
     # Log summary metrics
     wandb.summary.update({
         'eval_type': eval_type,
+        'evaluation_variant': evaluation_variant,
         'model_name': model_name,
         'n_multipliers': n_multipliers,
         'multiplier_source': multiplier_source,
     })
-
-
-def _log_comparison_artifact(
-    run_dir: str,
-    results: Dict[str, Any],
-    model_name: str,
-    multiplier_source: str,
-    multiplier_artifact_name: Optional[str],
-    n_multipliers: int,
-):
-    """Log a PoETa baseline vs intervened comparison as a W&B artifact."""
-    comparison = results.get('comparison', {})
-    overall_delta = comparison.get('overall', None)
-
-    artifact = wandb.Artifact(
-        name="poeta-comparison-results",
-        type="poeta-evaluation-comparison",
-        description="PoETa V2 baseline vs intervened comparison",
-        metadata={
-            'model_name': model_name,
-            'multiplier_source': multiplier_source,
-            'multiplier_artifact_name': multiplier_artifact_name,
-            'n_multipliers': n_multipliers,
-            'overall_delta': overall_delta,
-        }
-    )
-
-    # Add all files in the run directory
-    run_path = Path(run_dir)
-    for f in run_path.glob("*.json"):
-        artifact.add_file(str(f))
-    for f in run_path.glob("*.log"):
-        artifact.add_file(str(f))
-
-    wandb.log_artifact(artifact)
-    print(f"\nPoETa comparison artifact logged to W&B: poeta-comparison-results")
-
-    # Log summary metrics
-    summary = {
-        'model_name': model_name,
-        'n_multipliers': n_multipliers,
-        'multiplier_source': multiplier_source,
-    }
-    if overall_delta is not None:
-        summary['overall_delta'] = overall_delta
-
-    # Log per-task deltas to summary
-    for task, metrics in comparison.get('per_task', {}).items():
-        for metric, delta in metrics.items():
-            if isinstance(delta, (int, float)):
-                summary[f"delta/{task}/{metric}"] = delta
-
-    wandb.summary.update(summary)
 
 
 if __name__ == "__main__":
