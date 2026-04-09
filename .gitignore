@@ -10,4 +10,4 @@ artifacts/
 *.sbatch
 slurm_outputs/
 .env
-
+poeta_similarity_plots/

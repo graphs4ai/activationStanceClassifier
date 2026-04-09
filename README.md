@@ -10,7 +10,7 @@ This project investigates how political bias manifests in LLM internal represent
 2. **Identifies** politically-relevant neurons using SVM feature selection
 3. **Optimizes** intervention multipliers to shift model political stance
 4. **Evaluates** the intervention's effect using Likert-scale questionnaires
-5. **Validates** that interventions don't harm general capabilities (PoETa benchmark) *(deprecated)*
+5. **Evaluates** general capabilities with PoETa (run baseline/maximize/minimize separately)
 
 ## Pipeline Architecture
 
@@ -46,9 +46,9 @@ The project uses **W&B Artifacts** for full reproducibility and lineage tracking
 │                          │  (comparison visualizations are generated         │
 │                          │   automatically via plot_pi_shift.py)             │
 │                          ▼                                                   │
-│  5. POETA EVALUATION  ⚠️ deprecated                                          │
+│  5. POETA EVALUATION                                                         │
 │     poeta_evaluator.py                                                       │
-│     └──► PoETa V2 benchmark (baseline vs intervened)                         │
+│     └──► PoETa V2 benchmark (single variant per run)                         │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -70,6 +70,7 @@ The project uses **W&B Artifacts** for full reproducibility and lineage tracking
 ├── visualizations/
 │   ├── plot_pi_shift.py             # PI shift comparison plots
 │   ├── create_triple_comparison_wandb.py  # Base/Max/Min composite from W&B artifacts
+│   ├── compare_poeta_distributions.py      # PoETa baseline/min/max agreement + semantic similarity plots
 │   └── multipliers.py              # Multiplier distribution boxplot
 ├── scripts/
 │   ├── create_activation_datasets.sh  # Batch extraction runner
@@ -137,9 +138,10 @@ python src/likert_scale_test.py --config-name likert_eval-llama \
 python src/likert_scale_test.py --config-name likert_eval-llama \
   likert.multiplier_artifact_name="intervention-multipliers:latest"
 
-# 5. (Deprecated) PoETa capability benchmark
-python src/poeta_evaluator.py --config-name poeta_eval \
-  compare_baseline=true
+# 5. PoETa capability benchmark (single variant per run)
+python src/poeta_evaluator.py --config-name llama-3.1-8b-baseline
+python src/poeta_evaluator.py --config-name llama-3.1-8b-maximize
+python src/poeta_evaluator.py --config-name llama-3.1-8b-minimize
 ```
 
 ## Configuration
@@ -168,6 +170,35 @@ python src/extract_activations.py --config-name llama-3.1-8b \
 | `llama-3.1-8b.yaml` | **Unified** Llama 3.1 8B config (all pipeline steps) |
 | `gemma-3-4b.yaml` | **Unified** Gemma 3 4B config (all pipeline steps) |
 | `gemma-3-27b.yaml` | **Unified** Gemma 3 27B config (all pipeline steps) |
+| `<model>-baseline.yaml` | PoETa baseline variant config (no intervention) |
+| `<model>-maximize.yaml` | PoETa maximization intervention variant config |
+| `<model>-minimize.yaml` | PoETa minimization intervention variant config |
+
+### PoETa Variant Workflow
+
+PoETa now runs exactly one variant per invocation. To compare baseline/maximize/minimize, run all three configs and compare outputs manually (JSON files or W&B dashboard).
+
+```bash
+# Gemma 3 4B
+python src/poeta_evaluator.py --config-name gemma-3-4b-baseline
+python src/poeta_evaluator.py --config-name gemma-3-4b-maximize
+python src/poeta_evaluator.py --config-name gemma-3-4b-minimize
+
+# Llama 3.1 8B
+python src/poeta_evaluator.py --config-name llama-3.1-8b-baseline
+python src/poeta_evaluator.py --config-name llama-3.1-8b-maximize
+python src/poeta_evaluator.py --config-name llama-3.1-8b-minimize
+
+# Phi-3
+python src/poeta_evaluator.py --config-name phi-3-baseline
+python src/poeta_evaluator.py --config-name phi-3-maximize
+python src/poeta_evaluator.py --config-name phi-3-minimize
+
+# Qwen 3 8B
+python src/poeta_evaluator.py --config-name qwen-3-8b-baseline
+python src/poeta_evaluator.py --config-name qwen-3-8b-maximize
+python src/poeta_evaluator.py --config-name qwen-3-8b-minimize
+```
 
 
 ## Key Concepts
@@ -243,11 +274,27 @@ python src/optimize_intervention.py --config-name gemma-3-4b \
 python src/likert_scale_test.py --config-name likert_eval-gemma
 ```
 
-### Validate intervention doesn't harm capabilities *(deprecated)*
+### Validate intervention doesn't harm capabilities
 
 ```bash
-python src/poeta_evaluator.py --config-name poeta_eval_compare
+python src/poeta_evaluator.py --config-name qwen-3-8b-baseline
+python src/poeta_evaluator.py --config-name qwen-3-8b-maximize
+python src/poeta_evaluator.py --config-name qwen-3-8b-minimize
 ```
+
+### Compare PoETa baseline/min/max outputs (W&B artifacts) [still a bit hardcoded 🥺]
+>TODO: Later the artifact versions can be passed through hydra. Output dirs too and so on.
+
+After running PoETa variants, generate transition and semantic similarity heatmaps directly from W&B artifacts:
+
+```bash
+python visualizations/compare_poeta_distributions.py
+```
+
+Outputs are written to `poeta_similarity_plots/` and include:
+- Cohen's Kappa transition heatmaps for multiple-choice tasks (`enem_2022_greedy`, `math_mc_greedy`)
+- Pairwise semantic similarity heatmaps + CSV matrices for free-text task (`faquad`)
+- Aggregated `kappa_coefficients.csv`
 
 ### Resume interrupted optimization
 
