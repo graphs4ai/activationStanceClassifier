@@ -241,7 +241,7 @@ def plot_pairwise_similarity_heatmap(baseline_dict, min_dict, max_dict, task_nam
 
 def main():
     # Initialize wandb run (needed to download artifacts)
-    run = wandb.init(project="visualization_pipeline", job_type="analysis")
+    run = wandb.init(project=WANDB_ENTITY_PROJECT, job_type="poeta_visualization")
 
     kappa_results = []
 
