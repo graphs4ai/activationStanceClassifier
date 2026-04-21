@@ -215,11 +215,11 @@ def add_significance_bracket(
     ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y], lw=1.3, c="black")
     ax.text(
         (x1 + x2) * 0.5,
-        y + h + 0.03,
+        y + h + 0.05,
         label,
         ha="center",
-        va="bottom",
-        fontsize=12,
+        va="bottom" if label == "ns" else "center",
+        fontsize=28 if label == "ns" else 36,
         fontweight="bold",
     )
 
@@ -249,7 +249,7 @@ def create_composite_plot(
         patch.set_alpha(0.7)
 
     y_lower = -4.4
-    y_upper = 6.0
+    y_upper = 6.25
     y_range = y_upper - y_lower
     bracket_gap = 0.04 * y_range
     bracket_h = 0.03 * y_range
