@@ -11,3 +11,4 @@ artifacts/
 slurm_outputs/
 .env
 poeta_similarity_plots/
+.vscode/
