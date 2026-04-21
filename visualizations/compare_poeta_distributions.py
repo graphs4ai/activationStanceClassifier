@@ -44,6 +44,21 @@ def clean_mc_answer(ans):
     return str(ans).strip().upper().replace('.', '')
 
 
+def save_figure_in_formats(fig, output_dir, filename_base):
+    """Saves a matplotlib figure in PNG and PGF using explicit figure handles."""
+    fig.savefig(os.path.join(output_dir, f"{filename_base}.png"), dpi=300)
+
+    # Force vector-friendly export where possible to avoid PGF sidecar raster files.
+    for axis in fig.axes:
+        for artist in list(axis.collections) + list(axis.images):
+            try:
+                artist.set_rasterized(False)
+            except Exception:
+                pass
+
+    fig.savefig(os.path.join(output_dir, f"{filename_base}.pgf"))
+
+
 def plot_transition_heatmap(baseline_dict, intervened_dict, task_name, model_name, mapped_model_name):
     """Calculates Cohen's Kappa and plots a transition heatmap for MC tasks."""
     # Extract just the string answers, assuming 'dynamic-random' holds the data
@@ -61,17 +76,17 @@ def plot_transition_heatmap(baseline_dict, intervened_dict, task_name, model_nam
     cm = confusion_matrix(y_base, y_interv, labels=labels)
 
     # Plotting
-    plt.figure(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=labels, yticklabels=labels)
-    plt.title(
+                xticklabels=labels, yticklabels=labels, cbar=False, ax=ax)
+    ax.set_title(
         f"Transition Heatmap: Baseline vs {model_name} ({mapped_model_name})\nTask: {task_name} | Cohen's Kappa: {kappa:.3f}")
-    plt.xlabel(f"{model_name} Model Answers")
-    plt.ylabel("Baseline Answers")
-    plt.tight_layout()
-    output_filename = f"heatmap_{task_name}_{model_name}_{mapped_model_name}.png"
-    plt.savefig(os.path.join(OUTPUT_DIR, output_filename), dpi=300)
-    plt.close()
+    ax.set_xlabel(f"{model_name} Model Answers")
+    ax.set_ylabel("Baseline Answers")
+    fig.tight_layout()
+    output_filename_base = f"heatmap_{task_name}_{model_name}_{mapped_model_name}"
+    save_figure_in_formats(fig, OUTPUT_DIR, output_filename_base)
+    plt.close(fig)
     print(
         f"Saved categorical heatmap for {task_name} - {model_name} ({mapped_model_name}). Kappa: {kappa:.3f}")
 
@@ -79,7 +94,7 @@ def plot_transition_heatmap(baseline_dict, intervened_dict, task_name, model_nam
 
 
 def plot_pairwise_similarity_heatmap(baseline_dict, min_dict, max_dict, task_name, mapped_model_name):
-    """Calculates median semantic similarity and plots a 3x3 pairwise heatmap."""
+    """Calculates semantic similarity stats and plots 3x3 pairwise heatmaps."""
     print(
         f"Loading SentenceTransformer model for semantic similarity (Model: {mapped_model_name})...")
     # Adjust to your preferred embedding model
@@ -98,9 +113,12 @@ def plot_pairwise_similarity_heatmap(baseline_dict, min_dict, max_dict, task_nam
     embeddings = {name: model.encode(
         text_list, convert_to_tensor=True) for name, text_list in texts.items()}
 
-    # Compute 3x3 similarity matrix
+    # Compute 3x3 similarity matrices
     model_names = ["Baseline", "Min", "Max"]
-    sim_matrix = np.zeros((3, 3))
+    mean_matrix = np.zeros((3, 3))
+    std_matrix = np.zeros((3, 3))
+    median_matrix = np.zeros((3, 3))
+    iqr_matrix = np.zeros((3, 3))
 
     for i, model_a in enumerate(model_names):
         for j, model_b in enumerate(model_names):
@@ -109,28 +127,116 @@ def plot_pairwise_similarity_heatmap(baseline_dict, min_dict, max_dict, task_nam
                 embeddings[model_a], embeddings[model_b])
             # Extract the diagonal (similarity of corresponding paired answers)
             paired_sims = np.diag(cosine_scores.cpu().numpy())
-            # Use Median to avoid skewness from extreme outliers
-            sim_matrix[i, j] = np.median(paired_sims)
+            # Mean/std and robust stats for complementary summaries.
+            mean_matrix[i, j] = np.mean(paired_sims)
+            std_matrix[i, j] = np.std(paired_sims)
+            q1, q3 = np.percentile(paired_sims, [25, 75])
+            median_matrix[i, j] = np.median(paired_sims)
+            iqr_matrix[i, j] = q3 - q1
 
-    # Save the similarity matrix to CSV (one file per model)
-    sim_df = pd.DataFrame(sim_matrix, index=model_names, columns=model_names)
-    matrix_csv_filename = f"similarity_matrix_{task_name}_{mapped_model_name}.csv"
+    # Save matrix views for downstream analysis.
+    mean_df = pd.DataFrame(
+        mean_matrix, index=model_names, columns=model_names)
+    std_df = pd.DataFrame(std_matrix, index=model_names, columns=model_names)
+    median_df = pd.DataFrame(
+        median_matrix, index=model_names, columns=model_names)
+    iqr_df = pd.DataFrame(iqr_matrix, index=model_names, columns=model_names)
+
+    matrix_csv_filename = f"similarity_matrix_stats_{task_name}_{mapped_model_name}.csv"
     matrix_csv_path = os.path.join(OUTPUT_DIR, matrix_csv_filename)
-    sim_df.to_csv(matrix_csv_path)
+    matrix_long = (
+        pd.concat({"mean": mean_df, "std": std_df,
+                  "median": median_df, "iqr": iqr_df})
+        .rename_axis(index=["stat", "row_model"])
+        .stack()
+        .rename("value")
+        .reset_index()
+        .rename(columns={"level_2": "col_model"})
+        .pivot(index=["row_model", "col_model"], columns="stat", values="value")
+        .reset_index()
+    )
+    matrix_long.to_csv(matrix_csv_path, index=False)
     print(
-        f"Saved similarity matrix CSV for {task_name} ({mapped_model_name}) to {matrix_csv_path}")
+        f"Saved similarity stats matrix CSV for {task_name} ({mapped_model_name}) to {matrix_csv_path}")
 
-    # Plotting
-    plt.figure(figsize=(7, 5))
-    sns.heatmap(sim_matrix, annot=True, fmt='.3f', cmap='YlGnBu',
-                xticklabels=model_names, yticklabels=model_names, vmin=0.0, vmax=1.0)
-    plt.title(
-        f"Median Pairwise Semantic Similarity\nTask: {task_name} | Model: {mapped_model_name}")
-    plt.tight_layout()
-    output_filename = f"similarity_heatmap_{task_name}_{mapped_model_name}.png"
-    plt.savefig(os.path.join(OUTPUT_DIR, output_filename), dpi=300)
-    plt.close()
-    print(f"Saved similarity heatmap for {task_name} ({mapped_model_name}).")
+    mean_std_csv_path = os.path.join(
+        OUTPUT_DIR, f"similarity_matrix_mean_std_{task_name}_{mapped_model_name}.csv")
+    matrix_long[["row_model", "col_model", "mean", "std"]].to_csv(
+        mean_std_csv_path, index=False)
+    print(
+        f"Saved mean/std similarity matrix CSV for {task_name} ({mapped_model_name}) to {mean_std_csv_path}")
+
+    # Save a display-friendly matrix with both statistics in the same cell.
+    combined_cell_matrix = np.empty((3, 3), dtype=object)
+    for i in range(3):
+        for j in range(3):
+            combined_cell_matrix[i, j] = (
+                f"{median_matrix[i, j]:.3f}\n(IQR {iqr_matrix[i, j]:.3f})")
+
+    combined_df = pd.DataFrame(
+        combined_cell_matrix, index=model_names, columns=model_names)
+    combined_csv_path = os.path.join(
+        OUTPUT_DIR, f"similarity_matrix_median_iqr_display_{task_name}_{mapped_model_name}.csv")
+    combined_df.to_csv(combined_csv_path)
+    print(
+        f"Saved combined median/IQR display matrix CSV to {combined_csv_path}")
+
+    # Save a display-friendly mean/std matrix with both statistics in each cell.
+    mean_std_cell_matrix = np.empty((3, 3), dtype=object)
+    for i in range(3):
+        for j in range(3):
+            mean_std_cell_matrix[i, j] = (
+                f"{mean_matrix[i, j]:.3f}\n(Std {std_matrix[i, j]:.3f})")
+
+    mean_std_display_df = pd.DataFrame(
+        mean_std_cell_matrix, index=model_names, columns=model_names)
+    mean_std_display_csv_path = os.path.join(
+        OUTPUT_DIR, f"similarity_matrix_mean_std_display_{task_name}_{mapped_model_name}.csv")
+    mean_std_display_df.to_csv(mean_std_display_csv_path)
+    print(
+        f"Saved combined mean/std display matrix CSV to {mean_std_display_csv_path}")
+
+    # Plot a single heatmap: color by median, annotate each cell with median and IQR.
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(median_matrix,
+                annot=combined_cell_matrix,
+                fmt='',
+                cmap='YlGnBu',
+                xticklabels=model_names,
+                yticklabels=model_names,
+                vmin=0.0,
+                vmax=1.0,
+                cbar=False,
+                ax=ax)
+    ax.set_title(
+        f"Pairwise Semantic Similarity (Median with IQR)\nTask: {task_name} | Model: {mapped_model_name}")
+    fig.tight_layout()
+    output_filename_base = f"similarity_heatmap_median_iqr_{task_name}_{mapped_model_name}"
+    save_figure_in_formats(fig, OUTPUT_DIR, output_filename_base)
+    plt.close(fig)
+    print(
+        f"Saved combined median/IQR heatmap for {task_name} ({mapped_model_name}).")
+
+    # Plot a second heatmap: color by mean, annotate each cell with mean and std.
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(mean_matrix,
+                annot=mean_std_cell_matrix,
+                fmt='',
+                cmap='YlGnBu',
+                xticklabels=model_names,
+                yticklabels=model_names,
+                vmin=0.0,
+                vmax=1.0,
+                cbar=False,
+                ax=ax)
+    ax.set_title(
+        f"Pairwise Semantic Similarity (Mean with Std)\nTask: {task_name} | Model: {mapped_model_name}")
+    fig.tight_layout()
+    output_filename_base = f"similarity_heatmap_mean_std_{task_name}_{mapped_model_name}"
+    save_figure_in_formats(fig, OUTPUT_DIR, output_filename_base)
+    plt.close(fig)
+    print(
+        f"Saved combined mean/std heatmap for {task_name} ({mapped_model_name}).")
 
 
 def main():

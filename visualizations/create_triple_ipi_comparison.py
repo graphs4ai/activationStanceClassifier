@@ -275,6 +275,7 @@ def create_composite_plot(
     plt.tight_layout()
     output_plot_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_plot_path, dpi=300, bbox_inches="tight")
+    fig.savefig(str(output_plot_path).replace('.png', '.pgf'), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
