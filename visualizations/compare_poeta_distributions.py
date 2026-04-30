@@ -105,8 +105,8 @@ def plot_pairwise_similarity_heatmap(baseline_dict, min_dict, max_dict, task_nam
     # Extract texts
     texts = {
         "Baseline": [baseline_dict['dynamic-random'][k][0] for k in keys],
+        "Max": [max_dict['dynamic-random'][k][0] for k in keys],
         "Min": [min_dict['dynamic-random'][k][0] for k in keys],
-        "Max": [max_dict['dynamic-random'][k][0] for k in keys]
     }
 
     # Encode all texts into embeddings
