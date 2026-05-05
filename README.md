@@ -1,16 +1,16 @@
-# Activation Stance Classifier
+# LLM-Lobotomy
 
 A research framework for **analyzing and steering political stance** in Large Language Model (LLM) activations without fine-tuning. This project implements an end-to-end pipeline from activation extraction to bias intervention and evaluation.
 
 ## Research Overview
 
-This project investigates how political bias manifests in LLM internal representations and develops methods to **steer model behavior** through targeted activation interventions. The approach:
+LLM Lobotomy is a representation engineering framework for **inference-time behavioral steering** in Large Language Models (LLMs). Instead of fine-tuning model weights, the framework identifies stance-relevant residual-stream features and applies optimized activation-scaling multipliers during generation. The pipeline:
 
-1. **Extracts** neuron activations from politically-labeled text
-2. **Identifies** politically-relevant neurons using SVM feature selection
-3. **Optimizes** intervention multipliers to shift model political stance
-4. **Evaluates** the intervention's effect using Likert-scale questionnaires
-5. **Evaluates** general capabilities with PoETa (run baseline/maximize/minimize separately)
+1. **Extracts** residual-stream activations from a disjoint corpus of political statement pairs
+2. **Selects and ranks** stance-relevant features using a two-stage feature selection procedure
+3. **Optimizes** feature-wise activation multipliers to minimize or maximize a continuous token-level IPI surrogate
+4. **Evaluates** the induced behavioral shift through discrete Likert-scale IPI responses
+5. **Assesses** capability preservation using PoETa v2 tasks, comparing baseline and intervened model outputs
 
 ## Pipeline Architecture
 
